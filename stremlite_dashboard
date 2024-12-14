@@ -1,0 +1,136 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import requests
+from stocknews import StockNews
+
+# Dashboard Title
+st.title('Stock Dashboard')
+
+# Sidebar Inputs
+ticker = st.sidebar.text_input('Ticker', 'AAPL')
+start_date = st.sidebar.date_input('Start Date', pd.Timestamp('2020-01-01'))
+end_date = st.sidebar.date_input('End Date', pd.Timestamp('2023-01-01'))
+
+# API Keys (Replace with your actual API keys)
+FINNHUB_API_KEY = "YOUR_FINNHUB_API_KEY"
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+
+# Fetch Stock Data
+def get_finnhub_data(ticker, start_date, end_date):
+    start_timestamp = int(pd.Timestamp(start_date).timestamp())
+    end_timestamp = int(pd.Timestamp(end_date).timestamp())
+    url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={start_timestamp}&to={end_timestamp}&token={FINNHUB_API_KEY}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        raise Exception(f"HTTP Error {response.status_code}: {response.reason}")
+
+# Fetch Gemini Summary
+def get_gemini_summary(ticker):
+    url = f"https://api.gemini.com/v1/pubticker/{ticker}"
+    headers = {"X-API-KEY": GEMINI_API_KEY}
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        return response.json()
+    elif response.status_code == 400:
+        error_message = response.json().get('message', 'Unknown error')
+        st.error(f"Error fetching Gemini summary: {error_message}")
+    else:
+        raise Exception(f"HTTP Error {response.status_code}: {response.reason}")
+
+# Initialize Data
+data = pd.DataFrame()
+if ticker:
+    try:
+        stock_data = get_finnhub_data(ticker, start_date, end_date)
+        if stock_data and stock_data['s'] == 'ok':
+            data = pd.DataFrame({
+                'Date': pd.to_datetime(stock_data['t'], unit='s'),
+                'Adjusted Close': stock_data['c']
+            })
+            data.set_index('Date', inplace=True)
+
+            # Plot Line Chart
+            fig = px.line(data, x=data.index, y='Adjusted Close', title=f'{ticker} Stock Prices')
+            st.plotly_chart(fig)
+        else:
+            st.error(f"No data found for ticker '{ticker}'.")
+    except Exception as e:
+        st.error(f"Error fetching stock data: {str(e)}")
+
+# Tabs
+pricing_data, fundamental_data, news, summary = st.tabs(["Pricing Data", "Fundamental Data", "Top 10 News", "Summary"])
+
+# Pricing Data Tab
+with pricing_data:
+    if not data.empty:
+        st.header('Price Movements')
+        data['% Change'] = data['Adjusted Close'].pct_change()
+        data.dropna(inplace=True)
+        st.write(data)
+
+        # Annual Return and Standard Deviation
+        annual_return = data['% Change'].mean() * 252 * 100
+        st.write(f'Annual Return: {annual_return:.2f}%')
+
+        stdev = np.std(data['% Change']) * np.sqrt(252)
+        st.write(f'Standard Deviation: {stdev:.2f}%')
+    else:
+        st.error("No data available for pricing analysis.")
+
+# Fundamental Data Tab
+with fundamental_data:
+    st.header('Fundamental Data')
+    try:
+        url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={FINNHUB_API_KEY}"
+        response = requests.get(url)
+        if response.status_code == 200:
+            profile = response.json()
+            st.subheader('Key Metrics')
+            st.write({
+                'Company Name': profile.get('name', 'N/A'),
+                'Market Cap': profile.get('marketCapitalization', 'N/A'),
+                'P/E Ratio': profile.get('peRatio', 'N/A'),
+                'Exchange': profile.get('exchange', 'N/A'),
+                'Industry': profile.get('finnhubIndustry', 'N/A'),
+            })
+        else:
+            st.error("Failed to fetch fundamental data.")
+    except Exception as e:
+        st.error(f"Error fetching fundamental data: {e}")
+
+# News Tab
+with news:
+    st.header(f'News for {ticker}')
+    try:
+        sn = StockNews(ticker, save_news=False)
+        df_news = sn.read_rss()
+        for i in range(min(10, len(df_news))):  # Limit to 10 news items
+            st.subheader(f'News {i + 1}')
+            st.write(df_news['published'][i])
+            st.write(df_news['summary'][i])
+            title_sentiment = int((df_news['sentiment_title'][i] + 1) * 50)  # Scale 0-100
+            st.write(f'Title Sentiment: {title_sentiment}/100')
+            news_sentiment = int((df_news['sentiment_summary'][i] + 1) * 50)  # Scale 0-100
+            st.write(f'News Sentiment: {news_sentiment}/100')
+    except Exception as e:
+        st.error(f"Error fetching news: {e}")
+
+# Summary Tab
+with summary:
+    st.header(f'Summary for {ticker}')
+    try:
+        gemini_data = get_gemini_summary(ticker)
+        st.subheader('Current Market Summary')
+        st.write({
+            'Ask Price': gemini_data.get('ask', 'N/A'),
+            'Bid Price': gemini_data.get('bid', 'N/A'),
+            'Last Price': gemini_data.get('last', 'N/A'),
+            'Volume': gemini_data.get('volume', 'N/A'),
+        })
+    except Exception as e:
+        st.error(f"Error fetching Gemini summary: {e}")
